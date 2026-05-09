@@ -28,16 +28,19 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# 自定义 CSS：政务风格主色调
+# 自定义 CSS：政务风格主题（内联硬编码，不依赖 .streamlit/config.toml）
 st.markdown("""
 <style>
-    /* 主色调：深蓝 */
+    /* 政务风格主题 */
+    .stApp {
+        --primary-color: #1a3a5c;
+    }
     .block-title, h1, h2, h3 {
         color: #1a3a5c !important;
     }
     /* 按钮样式 */
     .stButton > button {
-        background-color: #8b0000;
+        background-color: #1a3a5c;
         color: white;
         border: none;
         border-radius: 4px;
@@ -45,22 +48,22 @@ st.markdown("""
         padding: 8px 24px;
     }
     .stButton > button:hover {
-        background-color: #a30000;
+        background-color: #8b0000;
         color: white;
     }
     /* 侧边栏背景 */
-    [data-testid="stSidebar"] {
+    .stSidebar, [data-testid="stSidebar"] {
         background-color: #f5f5f5;
     }
     /* 下载按钮 */
     .stDownloadButton > button {
-        background-color: #1a3a5c;
+        background-color: #8b0000;
         color: white;
         border: none;
         border-radius: 4px;
     }
     .stDownloadButton > button:hover {
-        background-color: #2a5a8c;
+        background-color: #a00000;
         color: white;
     }
 </style>
