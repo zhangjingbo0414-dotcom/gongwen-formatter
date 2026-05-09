@@ -310,6 +310,7 @@ def apply_main_title(doc, text):
     run = para.add_run(text)
     # 优先使用方正小标宋简体，若不可用则用黑体替代
     set_run_font(run, FONT_XIAOBIAOSONG, SIZE_ERHAO, bold=False)
+    apply_number_font(para)
 
 
 def apply_blank_line(doc):
@@ -340,6 +341,7 @@ def apply_fawen_hao(doc, text):
     )
     run = para.add_run(text)
     set_run_font(run, FONT_FANGSONG, SIZE_SANHAO, bold=False)
+    apply_number_font(para)
 
 
 def apply_body(doc, text, first_indent=True):
@@ -359,51 +361,133 @@ def apply_body(doc, text, first_indent=True):
     )
     run = para.add_run(text)
     set_run_font(run, FONT_FANGSONG, SIZE_SANHAO, bold=False)
+    apply_number_font(para)
+
+
+def apply_number_font(paragraph):
+    """将段落中的数字和英文字母设置为 Times New Roman 字体，其余保持原字体"""
+    runs_to_remove = []
+    for run in paragraph.runs:
+        text = run.text
+        if not text:
+            continue
+        # 用正则分割：数字+英文部分 和 非数字英文部分
+        parts = re.split(r'([0-9a-zA-Z]+)', text)
+        # 检查是否需要拆分（即是否有混合内容）
+        non_empty_parts = [p for p in parts if p]
+        has_alnum = any(re.match(r'^[0-9a-zA-Z]+$', p) for p in non_empty_parts)
+        has_non_alnum = any(not re.match(r'^[0-9a-zA-Z]+$', p) for p in non_empty_parts)
+        if not (has_alnum and has_non_alnum):
+            # 无需拆分，但如果全是数字/英文则改字体
+            if has_alnum and not has_non_alnum:
+                run.font.name = 'Times New Roman'
+                # 更新 rFonts 中的 ascii 和 hAnsi 属性
+                r = run._element
+                rPr = r.get_or_add_rPr()
+                rFonts = rPr.find(qn('w:rFonts'))
+                if rFonts is not None:
+                    rFonts.set(qn('w:ascii'), 'Times New Roman')
+                    rFonts.set(qn('w:hAnsi'), 'Times New Roman')
+            continue
+        # 需要拆分：为每个 part 创建新 run
+        for part in non_empty_parts:
+            new_run = paragraph.add_run(part)
+            # 复制原 run 的格式
+            new_run.font.size = run.font.size
+            new_run.font.bold = run.font.bold
+            new_run.font.italic = run.font.italic
+            if run.font.color.rgb is not None:
+                new_run.font.color.rgb = run.font.color.rgb
+            # 设置字体
+            if re.match(r'^[0-9a-zA-Z]+$', part):
+                new_run.font.name = 'Times New Roman'
+                # 复制 eastAsia 字体保持原样
+                r = run._element
+                rPr = r.get_or_add_rPr()
+                rFonts = rPr.find(qn('w:rFonts'))
+                if rFonts is not None:
+                    ea_font = rFonts.get(qn('w:eastAsia'))
+                else:
+                    ea_font = None
+                nr = new_run._element
+                nrPr = nr.get_or_add_rPr()
+                nrFonts = nrPr.find(qn('w:rFonts'))
+                if nrFonts is None:
+                    nrFonts = parse_xml(f'<w:rFonts {nsdecls("w")}/>')
+                    nrPr.insert(0, nrFonts)
+                nrFonts.set(qn('w:ascii'), 'Times New Roman')
+                nrFonts.set(qn('w:hAnsi'), 'Times New Roman')
+                if ea_font:
+                    nrFonts.set(qn('w:eastAsia'), ea_font)
+            else:
+                # 中文部分保持原字体
+                new_run.font.name = run.font.name
+                # 复制 rFonts 属性
+                r = run._element
+                rPr = r.get_or_add_rPr()
+                rFonts = rPr.find(qn('w:rFonts'))
+                if rFonts is not None:
+                    nr = new_run._element
+                    nrPr = nr.get_or_add_rPr()
+                    nrFonts = nrPr.find(qn('w:rFonts'))
+                    if nrFonts is None:
+                        nrFonts = parse_xml(f'<w:rFonts {nsdecls("w")}/>')
+                        nrPr.insert(0, nrFonts)
+                    for attr_key, attr_val in rFonts.attrib.items():
+                        nrFonts.set(attr_key, attr_val)
+        # 记录需要删除的原 run
+        runs_to_remove.append(run)
+    # 删除原来的 run
+    for run in runs_to_remove:
+        run._element.getparent().remove(run._element)
 
 
 def apply_level1_title(doc, text):
-    """一级标题格式：黑体，三号，无首行缩进，行距28磅"""
+    """一级标题格式：黑体，三号，首行缩进2字符，行距28磅"""
     para = doc.add_paragraph()
     set_paragraph_format(
         para,
         alignment=WD_ALIGN_PARAGRAPH.JUSTIFY,
-        first_line_indent=None,
+        first_line_indent=Pt(32),
         line_spacing=LINE_SPACING,
         space_before=Pt(0),
         space_after=Pt(0)
     )
     run = para.add_run(text)
     set_run_font(run, FONT_HEITI, SIZE_SANHAO, bold=False)
+    apply_number_font(para)
 
 
 def apply_level2_title(doc, text):
-    """二级标题格式：楷体_GB2312/楷体，三号，无首行缩进，行距28磅"""
+    """二级标题格式：楷体_GB2312/楷体，三号，首行缩进2字符，行距28磅"""
     para = doc.add_paragraph()
     set_paragraph_format(
         para,
         alignment=WD_ALIGN_PARAGRAPH.JUSTIFY,
-        first_line_indent=None,
+        first_line_indent=Pt(32),
         line_spacing=LINE_SPACING,
         space_before=Pt(0),
         space_after=Pt(0)
     )
     run = para.add_run(text)
     set_run_font(run, FONT_KAITI, SIZE_SANHAO, bold=False)
+    apply_number_font(para)
 
 
 def apply_level3_title(doc, text):
-    """三级标题格式：仿宋_GB2312加粗，三号，无首行缩进，行距28磅"""
+    """三级标题格式：仿宋_GB2312加粗，三号，首行缩进2字符，行距28磅"""
     para = doc.add_paragraph()
     set_paragraph_format(
         para,
         alignment=WD_ALIGN_PARAGRAPH.JUSTIFY,
-        first_line_indent=None,
+        first_line_indent=Pt(32),
         line_spacing=LINE_SPACING,
         space_before=Pt(0),
         space_after=Pt(0)
     )
     run = para.add_run(text)
     set_run_font(run, FONT_FANGSONG, SIZE_SANHAO, bold=True)
+    apply_number_font(para)
 
 
 def apply_attachment_marker(doc, text):
@@ -419,6 +503,7 @@ def apply_attachment_marker(doc, text):
     )
     run = para.add_run(text)
     set_run_font(run, FONT_FANGSONG, SIZE_SANHAO, bold=False)
+    apply_number_font(para)
 
 
 def apply_table(doc, table_data):
