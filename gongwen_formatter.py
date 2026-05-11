@@ -10,11 +10,13 @@
   2. 样式定义
   3. 文本解析
   4. 格式应用
-  5. 文件输出
+  5. 图片处理
+  6. 文件输出
 """
 
 import re
 import os
+import io
 from datetime import datetime
 
 from docx import Document
@@ -75,10 +77,33 @@ FONT_SONGTI = '宋体'             # 页码
 SIZE_ERHAO = Pt(22)      # 二号，用于主标题
 SIZE_SANHAO = Pt(16)     # 三号，用于正文
 SIZE_SIHAO = Pt(14)      # 四号，用于页码
-SIZE_XIAOSI = Pt(12)     # 小四号，用于图标题
+SIZE_XIAOSI = Pt(12)     # 小四号，用于图题
 
 # 行距
 LINE_SPACING = Pt(28)    # 固定值28磅
+
+# 页面有效宽度（A4宽减去左右边距：210 - 28 - 26 = 156mm）
+PAGE_CONTENT_WIDTH_MM = 156
+# 图片默认宽度：页面有效宽度的80%，约12.5cm
+IMAGE_DEFAULT_WIDTH_CM = 12.5
+
+# 公文类型定义
+DOC_TYPES = {
+    "通知": {"name": "通知", "greeting_no_indent": False},
+    "决定": {"name": "决定", "greeting_no_indent": False},
+    "意见": {"name": "意见", "greeting_no_indent": False},
+    "报告": {"name": "报告", "greeting_no_indent": False},
+    "请示": {"name": "请示", "greeting_no_indent": False},
+    "批复": {"name": "批复", "greeting_no_indent": False},
+    "函": {"name": "函", "greeting_no_indent": False},
+    "讲话稿": {"name": "讲话稿", "greeting_no_indent": True},
+    "会议纪要": {"name": "会议纪要", "greeting_no_indent": True},
+}
+
+# 问候语匹配正则：行首匹配问候词，且行末为冒号/逗号（称呼行特征）
+RE_GREETING = re.compile(
+    r'^(各位|同志们|朋友们|女士们|先生们|同志|朋友|各位领导|各位同事|各位来宾).+[：:，,]$'
+)
 
 
 def set_run_font(run, font_name, font_size, bold=False, color=None):
@@ -184,6 +209,72 @@ RE_FAWEN_HAO = re.compile(r'^[^\s]*〔\d{4}〕\d+号')           # 发文字号
 RE_TABLE_SEPARATOR = re.compile(r'^\|[-\s|]+\|$')              # 表格分隔行
 RE_TABLE_ROW = re.compile(r'^\|.*\|$')                         # 表格数据行
 
+# 图片标记正则：匹配 [图片1] [图片1,10cm] [图片1,50%] [图片1:图题] [图片1,10cm:图题]
+# 也匹配 【图片1】 [图1] 【图1】等变体
+RE_IMAGE = re.compile(
+    r'[【\[](图片?\d+)[,\s]*(宽?(?:\d+(?:\.\d+)?(?:cm|mm|%))?)\s*[：:]?\s*([^】\]]*?)[】\]]'
+)
+
+
+def parse_image_marker(text):
+    """
+    解析图片标记文本，提取图片名、宽度规格和图题
+    
+    支持的格式：
+      [图片1]          → name="图片1", width_spec="", caption=""
+      [图片1,10cm]     → name="图片1", width_spec="10cm", caption=""
+      [图片1,50%]      → name="图片1", width_spec="50%", caption=""
+      [图片1,宽8cm]    → name="图片1", width_spec="8cm", caption=""
+      [图片1:图题]     → name="图片1", width_spec="", caption="图题"
+      [图片1,10cm:图题] → name="图片1", width_spec="10cm", caption="图题"
+    
+    返回：
+      (image_name, width_spec, caption) 或 None
+    """
+    m = RE_IMAGE.match(text.strip())
+    if not m:
+        return None
+    name = m.group(1)
+    width_spec = m.group(2).strip()
+    caption = m.group(3).strip()
+    # 处理"宽8cm"格式，去掉"宽"前缀
+    if width_spec.startswith('宽'):
+        width_spec = width_spec[1:]
+    return name, width_spec, caption
+
+
+def parse_image_width(width_spec, page_content_width_mm=PAGE_CONTENT_WIDTH_MM):
+    """
+    解析宽度规格，返回 Cm 对象
+    
+    参数：
+      width_spec: 宽度规格字符串，如 "10cm", "50%", "80mm"
+      page_content_width_mm: 页面有效宽度（mm），用于百分比计算
+    
+    返回：
+      Cm 对象，或 None（表示使用默认宽度）
+    """
+    if not width_spec:
+        return None
+    
+    # 百分比
+    m_pct = re.match(r'^(\d+(?:\.\d+)?)%$', width_spec)
+    if m_pct:
+        pct = float(m_pct.group(1)) / 100.0
+        return Mm(page_content_width_mm * pct)
+    
+    # 厘米
+    m_cm = re.match(r'^(\d+(?:\.\d+)?)cm$', width_spec)
+    if m_cm:
+        return Cm(float(m_cm.group(1)))
+    
+    # 毫米
+    m_mm = re.match(r'^(\d+(?:\.\d+)?)mm$', width_spec)
+    if m_mm:
+        return Mm(float(m_mm.group(1)))
+    
+    return None
+
 
 def parse_text(text):
     """
@@ -201,7 +292,7 @@ def parse_text(text):
         {'type': 'attachment_marker', 'text': '...'}, # 附件标识
         {'type': 'attachment_title', 'text': '...'},  # 附件标题
         {'type': 'table', 'rows': [[...], ...]},     # 表格
-        {'type': 'image', ...},                       # 图片（从docx输入时）
+        {'type': 'image', 'name': '图片1', 'width_spec': '', 'caption': ''},  # 图片标记
     ]
     """
     lines = text.split('\n')
@@ -234,6 +325,20 @@ def parse_text(text):
                 main_title_found = True
                 i += 1
                 continue
+
+        # --- 图片标记识别（优先于表格识别，避免方括号被误判为表格） ---
+        img_parsed = parse_image_marker(stripped)
+        if img_parsed:
+            name, width_spec, caption = img_parsed
+            elements.append({
+                'type': 'image',
+                'name': name,
+                'width_spec': width_spec,
+                'caption': caption,
+                'text': stripped,  # 保留原始标记文本
+            })
+            i += 1
+            continue
 
         # --- 表格识别 ---
         if RE_TABLE_ROW.match(stripped):
@@ -344,13 +449,21 @@ def apply_fawen_hao(doc, text):
     apply_number_font(para)
 
 
-def apply_body(doc, text, first_indent=True):
+def apply_body(doc, text, first_indent=True, doc_type="通知"):
     """
     应用正文格式：仿宋_GB2312，三号，首行缩进2字符，行距28磅
     - first_indent: 是否首行缩进，附件正文不缩进
+    - doc_type: 公文类型，用于判断问候语是否缩进
     """
     para = doc.add_paragraph()
     indent = Pt(32) if first_indent else None  # 2字符约32磅（三号字2个字符宽度）
+
+    # 判断是否为问候语行（讲话稿/会议纪要中不缩进）
+    if first_indent and doc_type in ["讲话稿", "会议纪要"]:
+        text_stripped = text.strip()
+        if RE_GREETING.match(text_stripped):
+            indent = Pt(0)  # 问候语不缩进
+
     set_paragraph_format(
         para,
         alignment=WD_ALIGN_PARAGRAPH.JUSTIFY,
@@ -647,16 +760,145 @@ def set_table_borders(table):
 
 
 # ============================================================
-# 5. 文件输出模块
+# 5. 图片处理模块
 # ============================================================
 
-def format_gongwen(text, output_path=None):
+def add_image_to_doc(doc, image_data, width=None, caption=None):
+    """
+    在文档中插入图片
+    
+    参数：
+      doc: Document 对象
+      image_data: 图片数据，可以是文件路径(str)或字节流(bytes)
+      width: 图片宽度（Cm/Mm 对象），默认为页面有效宽度的80%（约12.5cm）
+      caption: 图题文字，如 "图1 网络架构图"
+    """
+    # 计算默认宽度：页面有效宽度的80%
+    if width is None:
+        width = Cm(IMAGE_DEFAULT_WIDTH_CM)
+    
+    # 图片前空0.5行（约14磅）
+    para_before = doc.add_paragraph()
+    set_paragraph_format(
+        para_before,
+        alignment=WD_ALIGN_PARAGRAPH.LEFT,
+        first_line_indent=None,
+        line_spacing=LINE_SPACING,
+        space_before=Pt(0),
+        space_after=Pt(0)
+    )
+    
+    # 添加图片段落
+    paragraph = doc.add_paragraph()
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = paragraph.add_run()
+    
+    # 处理不同类型的图片数据
+    if isinstance(image_data, bytes):
+        image_stream = io.BytesIO(image_data)
+        run.add_picture(image_stream, width=width)
+    elif isinstance(image_data, str):
+        # 文件路径
+        run.add_picture(image_data, width=width)
+    else:
+        # 假设是文件类对象（如 Streamlit UploadedFile）
+        image_stream = io.BytesIO(image_data.read())
+        run.add_picture(image_stream, width=width)
+    
+    # 图片段落的段落格式
+    pf = paragraph.paragraph_format
+    pf.space_before = Pt(0)
+    pf.space_after = Pt(0)
+    pf.line_spacing = LINE_SPACING
+    pf.line_spacing_rule = WD_LINE_SPACING.EXACTLY
+    
+    # 添加图题
+    if caption:
+        cap_para = doc.add_paragraph()
+        cap_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        cap_run = cap_para.add_run(caption)
+        cap_run.font.name = FONT_FANGSONG_ALT
+        # 设置东亚字体
+        r = cap_run._element
+        rPr = r.get_or_add_rPr()
+        rFonts = rPr.find(qn('w:rFonts'))
+        if rFonts is None:
+            rFonts = parse_xml(f'<w:rFonts {nsdecls("w")} w:eastAsia="{FONT_FANGSONG_ALT}"/>')
+            rPr.insert(0, rFonts)
+        else:
+            rFonts.set(qn('w:eastAsia'), FONT_FANGSONG_ALT)
+        cap_run.font.size = SIZE_XIAOSI  # 小四号（12磅）
+        cap_para.paragraph_format.space_before = Pt(7)   # 约0.5行
+        cap_para.paragraph_format.space_after = Pt(7)
+        cap_para.paragraph_format.line_spacing = LINE_SPACING
+        cap_para.paragraph_format.line_spacing_rule = WD_LINE_SPACING.EXACTLY
+    
+    # 图片后空0.5行（约14磅）
+    para_after = doc.add_paragraph()
+    set_paragraph_format(
+        para_after,
+        alignment=WD_ALIGN_PARAGRAPH.LEFT,
+        first_line_indent=None,
+        line_spacing=LINE_SPACING,
+        space_before=Pt(0),
+        space_after=Pt(0)
+    )
+
+
+def process_image_element(doc, elem, images):
+    """
+    处理图片类型的元素
+    
+    参数：
+      doc: Document 对象
+      elem: 解析后的图片元素 {'type': 'image', 'name': '图片1', ...}
+      images: 图片字典，key为标记名如"图片1"，value为图片数据
+    """
+    name = elem.get('name', '')
+    width_spec = elem.get('width_spec', '')
+    caption = elem.get('caption', '')
+    
+    # 查找图片数据
+    image_data = None
+    if images and name in images:
+        image_data = images[name]
+    
+    if image_data is None:
+        # 没有对应图片数据，将标记作为普通正文输出
+        apply_body(doc, elem.get('text', ''), first_indent=True)
+        return
+    
+    # 解析宽度
+    width = parse_image_width(width_spec)
+    
+    # 自动生成图题编号
+    # 从图片名中提取数字，如 "图片1" → "图1"
+    num_match = re.search(r'\d+', name)
+    img_num = num_match.group(0) if num_match else ''
+    
+    # 如果有图题文字，添加编号前缀
+    if caption and img_num:
+        caption = f"图{img_num} {caption}"
+    elif caption:
+        caption = caption
+    
+    # 插入图片
+    add_image_to_doc(doc, image_data, width=width, caption=caption if caption else None)
+
+
+# ============================================================
+# 6. 文件输出模块
+# ============================================================
+
+def format_gongwen(text, output_path=None, images=None, doc_type="通知"):
     """
     主格式化函数：接收纯文本，输出规范格式的 .docx 文件
     
     参数：
       text: 纯文本字符串
       output_path: 输出文件路径，默认为 "公文_时间戳.docx"
+      images: 图片字典，key为标记名如"图片1"，value为图片数据(bytes/文件路径)
+      doc_type: 公文类型，如"通知"、"讲话稿"等
     
     返回：
       生成的文件路径
@@ -684,7 +926,7 @@ def format_gongwen(text, output_path=None):
             apply_fawen_hao(doc, elem['text'])
 
         elif etype == 'body':
-            apply_body(doc, elem['text'], first_indent=True)
+            apply_body(doc, elem['text'], first_indent=True, doc_type=doc_type)
 
         elif etype == 'level1':
             apply_level1_title(doc, elem['text'])
@@ -700,6 +942,9 @@ def format_gongwen(text, output_path=None):
 
         elif etype == 'table':
             apply_table(doc, elem['rows'])
+
+        elif etype == 'image':
+            process_image_element(doc, elem, images)
 
     # 4. 添加页码
     add_page_number(doc)
@@ -722,18 +967,20 @@ def format_gongwen(text, output_path=None):
 # 入口函数
 # ============================================================
 
-def main(text, output_path=None):
+def main(text, output_path=None, images=None, doc_type="通知"):
     """
     入口函数
     
     参数：
       text: 纯文本字符串（公文内容）
       output_path: 输出文件路径（可选）
+      images: 图片字典，key为标记名如"图片1"，value为图片数据(bytes或文件路径)（可选）
+      doc_type: 公文类型，默认"通知"
     
     返回：
       生成的文件路径
     """
-    return format_gongwen(text, output_path)
+    return format_gongwen(text, output_path, images=images, doc_type=doc_type)
 
 
 if __name__ == '__main__':
