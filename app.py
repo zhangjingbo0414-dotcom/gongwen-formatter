@@ -162,9 +162,57 @@ with st.sidebar:
 - **单元格对齐**：垂直居中，水平居中
 """)
 
+    with st.expander("🖼️ 图片格式", expanded=False):
+        st.markdown("""
+- **默认宽度**：页面有效宽度的80%（约12.5cm）
+- **对齐**：居中
+- **图题**：仿宋，小四号（12磅），居中
+- **图题位置**：图片下方
+
+**图片标记用法**：
+- `[图片1]` — 基本插入
+- `[图片1,10cm]` — 指定宽度10cm
+- `[图片1,50%]` — 页面宽度的50%
+- `[图片1:图题文字]` — 带图题
+- `[图片1,8cm:图题文字]` — 指定宽度+图题
+- 也支持 `[图1]`、`【图片1】` 等格式
+""")
+
+    st.markdown("---")
+
+    # 公文类型选择
+    doc_type = st.selectbox(
+        "📋 公文类型",
+        ["通知", "决定", "意见", "报告", "请示", "批复", "函", "讲话稿", "会议纪要"],
+        index=0,
+        help="不同类型公文的格式略有差异"
+    )
+
+    # 根据公文类型显示格式提示
+    if doc_type in ["讲话稿", "会议纪要"]:
+        st.caption('💡 讲话稿/会议纪要：问候语行（如"同志们："）不缩进')
+
+    # 图片上传
+    uploaded_images = st.file_uploader(
+        "🖼️ 上传图片（可选）",
+        type=["png", "jpg", "jpeg", "bmp", "gif"],
+        accept_multiple_files=True,
+        help="上传图片后，在文本中使用 [图片1]、[图片2] 标记图片位置"
+    )
+
+    # 显示上传图片的预览和标记名提示
+    if uploaded_images:
+        st.markdown("**已上传图片：**")
+        for i, img in enumerate(uploaded_images, 1):
+            col_img, col_info = st.columns([1, 2])
+            with col_img:
+                st.image(img, width=60)
+            with col_info:
+                st.caption(f"标记：`[图片{i}]`")
+
     st.markdown("---")
     st.markdown("""
-<small>💡 **提示**：粘贴文本时，系统会自动识别主标题、发文字号、各级标题、正文和表格等结构。</small>
+<small>💡 **提示**：粘贴文本时，系统会自动识别主标题、发文字号、各级标题、正文、表格和图片标记等结构。</small>
 """, unsafe_allow_html=True)
 
 
@@ -216,7 +264,7 @@ with col_input:
         "公文文本",
         value=default_text,
         height=400,
-        placeholder="请在此粘贴公文内容...\n\n示例格式：\n标题\n\n发文字号\n\n正文内容...\n\n一、一级标题\n（一）二级标题\n1. 三级标题",
+        placeholder="请在此粘贴公文内容...\n\n示例格式：\n标题\n\n发文字号\n\n正文内容...\n\n一、一级标题\n（一）二级标题\n1. 三级标题\n\n[图片1] — 插入图片标记",
         label_visibility="collapsed",
     )
 
@@ -255,8 +303,19 @@ with col_output:
                     output_filename = f"公文_{timestamp}.docx"
                     output_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), output_filename)
 
+                    # 构建图片字典
+                    images = {}
+                    if uploaded_images:
+                        for i, img in enumerate(uploaded_images, 1):
+                            images[f"图片{i}"] = img.read()
+
                     # 调用格式化模块
-                    result_path = gongwen_formatter.main(text_input.strip(), output_path)
+                    result_path = gongwen_formatter.main(
+                        text_input.strip(),
+                        output_path,
+                        images=images if images else None,
+                        doc_type=doc_type
+                    )
 
                     st.success("✅ 公文文档生成成功！")
 
@@ -275,7 +334,7 @@ with col_output:
 
                     # 显示文件信息
                     file_size_kb = len(file_bytes) / 1024
-                    st.info(f"📁 文件名：{output_filename}\n\n📊 文件大小：{file_size_kb:.1f} KB")
+                    st.info(f"📁 文件名：{output_filename}\n\n📊 文件大小：{file_size_kb:.1f} KB\n\n📋 公文类型：{doc_type}")
 
                     # 简要预览解析结果
                     with st.expander("🔍 解析结构预览", expanded=False):
@@ -291,6 +350,7 @@ with col_output:
                             "attachment_marker": "📎 附件标识",
                             "attachment_title": "📎 附件标题",
                             "table": "📊 表格",
+                            "image": "🖼️ 图片",
                         }
                         for i, elem in enumerate(elements):
                             etype = elem["type"]
@@ -298,6 +358,16 @@ with col_output:
                             if etype == "table":
                                 rows = elem.get("rows", [])
                                 st.write(f"{i+1}. {label} — {len(rows)} 行 × {len(rows[0]) if rows else 0} 列")
+                            elif etype == "image":
+                                img_name = elem.get("name", "")
+                                img_caption = elem.get("caption", "")
+                                img_width = elem.get("width_spec", "")
+                                detail = img_name
+                                if img_width:
+                                    detail += f"，宽度：{img_width}"
+                                if img_caption:
+                                    detail += f"，图题：{img_caption}"
+                                st.write(f"{i+1}. {label} — {detail}")
                             else:
                                 text_preview = elem.get("text", "")[:50]
                                 st.write(f"{i+1}. {label} — {text_preview}")
